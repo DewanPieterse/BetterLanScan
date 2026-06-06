@@ -586,10 +586,40 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
 
 
+def _fix_macos_menu_name(name: str) -> None:
+    """Force the macOS menu bar to show 'name' instead of 'Python'.
+
+    PyInstaller bootstraps via an internal Python loader; macOS reads the
+    menu-bar label from NSRunningApplication.localizedName which in turn
+    comes from CFBundleName in the *process* bundle — which can resolve to
+    the embedded Python.framework before Qt sets its own name. We override it
+    explicitly through the Foundation bundle dictionary.
+    """
+    try:
+        from Foundation import NSBundle
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        if info is not None:
+            info["CFBundleName"] = name
+            info["CFBundleDisplayName"] = name
+    except Exception:
+        pass
+    try:
+        # Belt-and-suspenders: also rename the process itself.
+        import ctypes, ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        # setprogname(3) — macOS-specific
+        libc.setprogname(name.encode())
+    except Exception:
+        pass
+
+
 def run():
     import sys
+    _fix_macos_menu_name(__app_name__)
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
+    app.setApplicationDisplayName(__app_name__)
     app.setStyleSheet(QSS)
     # Request Location auth so Wi-Fi scans can return SSIDs/BSSIDs.
     try:
