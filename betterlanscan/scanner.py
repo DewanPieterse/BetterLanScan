@@ -52,11 +52,11 @@ class Device:
         return self.custom_name or self.hostname or self.ip
 
     @property
-    def ip_sortkey(self) -> int:
+    def ip_sortkey(self) -> str:
         try:
-            return int(ipaddress.IPv4Address(self.ip))
+            return '.'.join(f'{int(p):03d}' for p in self.ip.split('.'))
         except Exception:
-            return 0
+            return self.ip
 
 
 def _ping(ip: str, timeout_ms: int = 600) -> tuple[bool, float | None]:
