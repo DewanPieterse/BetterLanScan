@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from . import netinfo, scanner, wifi, __version__, __app_name__
 from .style import QSS
 from .widgets import SignalBars, StatusDot, SignalMeter, quality_color
+from .detail_panel import DeviceDetailPanel
 
 MONO = "SF Mono, Menlo, monospace"
 
@@ -111,12 +112,13 @@ class LanTab(QWidget):
 
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
+        root.setContentsMargins(20, 16, 0, 16)
         root.setSpacing(14)
 
         # ---- control bar
         bar = QHBoxLayout()
         bar.setSpacing(10)
+        bar.setContentsMargins(0, 0, 20, 0)
         lbl = QLabel("Subnet")
         lbl.setObjectName("subtle")
         self.subnet_edit = QLineEdit(self.info.cidr or "192.168.1.0/24")
@@ -143,6 +145,7 @@ class LanTab(QWidget):
         # ---- stat chips
         chips = QHBoxLayout()
         chips.setSpacing(12)
+        chips.setContentsMargins(0, 0, 20, 0)
         self.chip_found = self._chip("DEVICES FOUND", "0")
         self.chip_scanned = self._chip("PROGRESS", "0 / 0")
         self.chip_gateway = self._chip("GATEWAY", self.info.gateway or "—")
@@ -159,7 +162,11 @@ class LanTab(QWidget):
         self.progress.setValue(0)
         root.addWidget(self.progress)
 
-        # ---- table
+        # ---- table + detail panel (horizontal split)
+        split = QHBoxLayout()
+        split.setContentsMargins(0, 0, 0, 0)
+        split.setSpacing(0)
+
         self.table = QTableWidget(0, len(LAN_COLS))
         self.table.setHorizontalHeaderLabels(LAN_COLS)
         self.table.setAlternatingRowColors(True)
@@ -180,7 +187,15 @@ class LanTab(QWidget):
         self.table.setColumnWidth(5, 140)
         self.table.setColumnWidth(7, 80)
         self.table.verticalHeader().setDefaultSectionSize(34)
-        root.addWidget(self.table, 1)
+        self.table.itemSelectionChanged.connect(self._on_row_selected)
+        split.addWidget(self.table, 1)
+
+        # detail panel (hidden until a row is clicked)
+        self.detail_panel = DeviceDetailPanel()
+        self.detail_panel.closed.connect(self._on_panel_closed)
+        split.addWidget(self.detail_panel)
+
+        root.addLayout(split, 1)
 
     def _chip(self, title, value):
         f = QFrame()
@@ -197,6 +212,21 @@ class LanTab(QWidget):
         lay.addWidget(t)
         lay.addWidget(v)
         return f
+
+    # ---- row selection → detail panel
+    def _on_row_selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        # resolve IP from the IP-address column (col 1), strip badges
+        ip_text = (self.table.item(rows[0].row(), 1) or QTableWidgetItem()).text()
+        ip = ip_text.split()[0]   # strip "(you)" / "(gateway)" suffixes
+        dev = self.devices.get(ip)
+        if dev:
+            self.detail_panel.show_device(dev)
+
+    def _on_panel_closed(self):
+        self.table.clearSelection()
 
     # ---- scanning
     def toggle_scan(self):
