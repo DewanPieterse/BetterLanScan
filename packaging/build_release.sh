@@ -1,22 +1,30 @@
 #!/bin/bash
-# Build the GitHub-release zip: ad-hoc-signed, self-contained BetterLanScan.app.
+# Build the GitHub-release DMG: ad-hoc-signed, self-contained BetterLanScan.app
+# with custom drag-to-Applications installer background.
 #
 # Ad-hoc signing (not Developer ID) means Gatekeeper shows the normal
 # "unidentified developer" prompt rather than "app is damaged" — good enough
 # for free GitHub/Homebrew distribution. For zero warnings you'd notarize
 # instead (see packaging/sign_and_notarize.sh).
 #
-# Output: dist_release/BetterLanScan-<version>.zip  (+ prints sha256 for the Cask)
+# Output: dist_release/BetterLanScan-<version>.dmg  (+ prints sha256 for the Cask)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-1.0.0}"
 SRC_APP="$ROOT/dist_standalone/BetterLanScan.app"
 ENT="$ROOT/packaging/entitlements.plist"
-OUT="$ROOT/dist_release/BetterLanScan-${VERSION}.zip"
+OUT="$ROOT/dist_release/BetterLanScan-${VERSION}.dmg"
+VENV="$HOME/Library/Application Support/BetterLanScan/venv"
+DMGBUILD="$VENV/bin/dmgbuild"
 
 if [ ! -d "$SRC_APP" ]; then
   echo "App not built. Run packaging/build_dist.sh first." >&2
   exit 1
+fi
+
+if [ ! -x "$DMGBUILD" ]; then
+  echo "Installing dmgbuild…"
+  "$VENV/bin/pip" install --quiet dmgbuild
 fi
 
 WORK="$(mktemp -d /tmp/bls_rel.XXXXXX)"
@@ -36,10 +44,26 @@ codesign --force --options runtime --entitlements "$ENT" -s - \
 codesign --force --options runtime --entitlements "$ENT" -s - "$APP"
 codesign --verify --deep --strict "$APP"
 
-echo "▸ Zipping…"
+# Point dmg_settings at the staged (signed) app
+export BLS_ROOT="$ROOT"
+
+# Temporarily swap in the signed app so dmgbuild picks it up
+ORIG_APP="$ROOT/dist_standalone/BetterLanScan.app"
+BACKUP="$WORK/BetterLanScan_orig.app"
+ditto "$ORIG_APP" "$BACKUP"
+ditto "$APP" "$ORIG_APP"
+
+echo "▸ Building installer DMG…"
 mkdir -p "$ROOT/dist_release"
 rm -f "$OUT"
-( cd "$WORK" && ditto -c -k --sequesterRsrc --keepParent "BetterLanScan.app" "$OUT" )
+"$DMGBUILD" -s "$ROOT/packaging/dmg_settings.py" \
+  "BetterLanScan $VERSION" "$OUT"
+
+# Restore original
+rm -rf "$ORIG_APP"; ditto "$BACKUP" "$ORIG_APP"
+
+echo "▸ Ad-hoc signing DMG…"
+codesign --force -s - "$OUT"
 
 SHA=$(shasum -a 256 "$OUT" | awk '{print $1}')
 echo ""
