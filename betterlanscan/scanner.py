@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 
 from . import oui
 
-# Common ports probed for the optional service scan + device-type hinting.
 COMMON_PORTS: dict[int, str] = {
     21: "FTP", 22: "SSH", 23: "Telnet", 53: "DNS", 80: "HTTP",
     139: "SMB", 443: "HTTPS", 445: "SMB", 515: "Printer", 548: "AFP",
@@ -28,13 +27,29 @@ class Device:
     mac: str = ""
     vendor: str = ""
     hostname: str = ""
+    custom_name: str = ""       # user-assigned label (from DB)
     rtt_ms: float | None = None
     is_up: bool = False
     is_self: bool = False
     is_gateway: bool = False
     open_ports: list[int] = field(default_factory=list)
     device_type: str = ""
+    os_guess: str = ""          # e.g. "macOS", "Windows"
+    os_icon: str = ""           # emoji
+    os_confidence: str = ""     # "certain" / "likely" / "guess"
+    is_favourite: bool = False
+    is_new: bool = False        # True if not seen in DB before
+    arp_conflict: bool = False  # same MAC seen on different IP
+    notes: str = ""
+    first_seen: float = 0.0
+    times_seen: int = 1
     last_seen: float = field(default_factory=time.time)
+    bonjour_services: list[str] = field(default_factory=list)
+    ipv6: list[str] = field(default_factory=list)
+
+    @property
+    def display_name(self) -> str:
+        return self.custom_name or self.hostname or self.ip
 
     @property
     def ip_sortkey(self) -> int:
@@ -45,7 +60,6 @@ class Device:
 
 
 def _ping(ip: str, timeout_ms: int = 600) -> tuple[bool, float | None]:
-    """Single ICMP probe. Returns (up, rtt_ms)."""
     try:
         proc = subprocess.run(
             ["ping", "-c", "1", "-W", str(timeout_ms), "-n", ip],
@@ -66,9 +80,7 @@ def _reverse_dns(ip: str) -> str:
         return ""
 
 
-_ARP_RE = re.compile(
-    r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)"
-)
+_ARP_RE = re.compile(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)")
 
 
 def read_arp_table() -> dict[str, str]:
@@ -87,33 +99,32 @@ def read_arp_table() -> dict[str, str]:
         ip, mac = m.group(1), m.group(2).lower()
         if mac in ("(incomplete)", "ff:ff:ff:ff:ff:ff"):
             continue
-        # normalise single-digit octets (a:b:c -> 0a:0b:0c)
         parts = mac.split(":")
         if len(parts) == 6:
             table[ip] = ":".join(p.zfill(2) for p in parts)
     return table
 
 
+def detect_arp_conflicts(devices: list[Device]) -> set[str]:
+    """Return set of MACs that appear on more than one IP."""
+    mac_to_ips: dict[str, list[str]] = {}
+    for d in devices:
+        if d.mac:
+            mac_to_ips.setdefault(d.mac, []).append(d.ip)
+    return {mac for mac, ips in mac_to_ips.items() if len(ips) > 1}
+
+
 def scan_ports(ip: str, ports: list[int] | None = None,
                timeout: float = 0.4) -> list[int]:
     ports = ports or list(COMMON_PORTS)
-    open_ports: list[int] = []
 
     def probe(p: int) -> int | None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
-            try:
-                if s.connect_ex((ip, p)) == 0:
-                    return p
-            except Exception:
-                return None
-        return None
+            return p if s.connect_ex((ip, p)) == 0 else None
 
     with cf.ThreadPoolExecutor(max_workers=min(len(ports), 40)) as ex:
-        for r in ex.map(probe, ports):
-            if r is not None:
-                open_ports.append(r)
-    return sorted(open_ports)
+        return sorted(r for r in ex.map(probe, ports) if r is not None)
 
 
 def guess_device_type(dev: Device) -> str:
@@ -125,20 +136,22 @@ def guess_device_type(dev: Device) -> str:
     if 9100 in ports or 515 in ports or 631 in ports:
         return "Printer"
     if 32400 in ports:
-        return "Media Server"
+        return "Media Server (Plex)"
     if 62078 in ports or "iphone" in host or "ipad" in host:
         return "iPhone / iPad"
     if any(k in v for k in ("apple",)):
         return "Apple device"
     if any(k in v for k in ("raspberry", "espressif", "texas instruments")):
         return "IoT / Embedded"
-    if any(k in v for k in ("samsung", "lg", "sony", "hisense")) and 8080 in ports:
+    if any(k in v for k in ("samsung", "lg", "sony", "hisense")) and (8080 in ports or 55001 in ports):
         return "Smart TV"
     if any(k in v for k in ("tp-link", "netgear", "d-link", "asus", "ubiquiti",
-                            "aruba", "cisco", "avm")):
+                            "aruba", "cisco", "avm", "mikrotik")):
         return "Network device"
-    if any(k in v for k in ("amazon", "google")):
-        return "Smart speaker / Cast"
+    if any(k in v for k in ("amazon",)):
+        return "Amazon Echo / Fire"
+    if any(k in v for k in ("google",)):
+        return "Google / Chromecast"
     if 445 in ports or 139 in ports or 3389 in ports:
         return "Computer (Windows)"
     if 22 in ports:
@@ -149,12 +162,14 @@ def guess_device_type(dev: Device) -> str:
 
 
 class ScanController:
-    """Drives a concurrent sweep. Callbacks fire from worker threads."""
+    """Concurrent sweep with DB integration, OS guessing, ARP conflict detection."""
 
-    def __init__(self, on_device=None, on_progress=None, on_done=None):
+    def __init__(self, on_device=None, on_progress=None, on_done=None,
+                 on_new_device=None):
         self.on_device = on_device or (lambda d: None)
         self.on_progress = on_progress or (lambda done, total: None)
         self.on_done = on_done or (lambda devices: None)
+        self.on_new_device = on_new_device or (lambda d: None)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -167,20 +182,30 @@ class ScanController:
 
     def start(self, hosts: list[str], *, self_ip: str = "", gateway_ip: str = "",
               do_ports: bool = True, max_workers: int = 128,
-              ping_timeout_ms: int = 600) -> None:
+              ping_timeout_ms: int = 600,
+              extra_ports: list[int] | None = None) -> None:
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
-            args=(hosts, self_ip, gateway_ip, do_ports, max_workers, ping_timeout_ms),
+            args=(hosts, self_ip, gateway_ip, do_ports, max_workers,
+                  ping_timeout_ms, extra_ports),
             daemon=True,
         )
         self._thread.start()
 
-    def _run(self, hosts, self_ip, gateway_ip, do_ports, max_workers, ping_timeout_ms):
+    def _run(self, hosts, self_ip, gateway_ip, do_ports, max_workers,
+             ping_timeout_ms, extra_ports):
+        from . import db, os_detect, notify
+        db.init()
+        known = db.known_macs()
         total = len(hosts)
         done = 0
         found: list[Device] = []
         lock = threading.Lock()
+
+        ports_to_scan = list(COMMON_PORTS)
+        if extra_ports:
+            ports_to_scan = sorted(set(ports_to_scan) | set(extra_ports))
 
         def work(ip: str) -> Device | None:
             if self._stop.is_set():
@@ -193,7 +218,7 @@ class ScanController:
                          is_gateway=(ip == gateway_ip))
             dev.hostname = _reverse_dns(ip)
             if do_ports and not self._stop.is_set():
-                dev.open_ports = scan_ports(ip)
+                dev.open_ports = scan_ports(ip, ports_to_scan)
             return dev
 
         with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -209,32 +234,61 @@ class ScanController:
                         found.append(dev)
                     self.on_device(dev)
 
-        # enrich with ARP MACs + vendor + device type (ARP populated by pings)
+        # Enrich: ARP → MAC → vendor → OS → device type → DB
         arp = read_arp_table()
         for dev in found:
             dev.mac = arp.get(dev.ip, dev.mac)
             if dev.mac:
                 dev.vendor = oui.lookup(dev.mac)
+                # Load persisted info
+                row = db.get_device(dev.mac)
+                if row:
+                    dev.custom_name = row["custom_name"] or ""
+                    dev.notes       = row["notes"] or ""
+                    dev.is_favourite= bool(row["is_favourite"])
+                    dev.first_seen  = row["first_seen"] or 0
+                    dev.times_seen  = (row["times_seen"] or 1) + 1
+                    dev.is_new      = False
+                else:
+                    dev.is_new = True
+
             dev.device_type = guess_device_type(dev)
-            self.on_device(dev)  # emit again with enriched data
+
+            # OS guess
+            og = os_detect.guess(None, dev.open_ports, [], dev.vendor, dev.hostname)
+            dev.os_guess = og.name
+            dev.os_icon  = og.icon
+            dev.os_confidence = og.confidence
+
+            # Persist
+            if dev.mac:
+                db.upsert_device(dev.mac, dev.ip, dev.hostname,
+                                 dev.vendor, dev.device_type, dev.os_guess)
+                db.log_ping(dev.ip, dev.rtt_ms)
+                if dev.is_new:
+                    self.on_new_device(dev)
+                    try:
+                        notify.new_device(dev.ip, dev.mac, dev.vendor, dev.hostname)
+                    except Exception:
+                        pass
+
+            self.on_device(dev)
+
+        # ARP conflict detection
+        conflict_macs = detect_arp_conflicts(found)
+        for dev in found:
+            if dev.mac in conflict_macs:
+                dev.arp_conflict = True
+                self.on_device(dev)
+                try:
+                    from . import notify as _n
+                    others = [d.ip for d in found if d.mac == dev.mac and d.ip != dev.ip]
+                    _n.arp_conflict(dev.ip, dev.mac, others[0] if others else "?")
+                except Exception:
+                    pass
+
+        from . import db as _db
+        _db.log_scan(f"{len(hosts)} hosts", len(found))
 
         found.sort(key=lambda d: d.ip_sortkey)
         self.on_done(found)
-
-
-if __name__ == "__main__":
-    from . import netinfo
-    info = netinfo.get_interface_info()
-    hosts = netinfo.hosts_for_cidr(info.cidr)
-    print(f"Scanning {info.cidr} ({len(hosts)} hosts)…")
-    results: list[Device] = []
-    ctl = ScanController(
-        on_progress=lambda d, t: print(f"\r{d}/{t}", end="", flush=True),
-        on_done=lambda devs: results.extend(devs),
-    )
-    ctl.start(hosts, self_ip=info.ipv4, gateway_ip=info.gateway, do_ports=True)
-    while ctl.running:
-        time.sleep(0.2)
-    print("\n")
-    for d in results:
-        print(f"{d.ip:<16}{d.mac:<19}{d.vendor:<16}{d.device_type:<18}{d.hostname}")

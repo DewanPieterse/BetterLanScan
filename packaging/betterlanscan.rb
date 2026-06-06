@@ -1,6 +1,6 @@
 cask "betterlanscan" do
-  version "1.0.1"
-  sha256 "9fac51a164b50391ea21d2363d22b0eaafd9b6859ebf269b676175d2941ec3e7"
+  version "1.1.0"
+  sha256 "0b0af79d9b3d8db8b5d12badb2e0d52e5584c1ba07d3c355f851d49df3dd9261"
 
   url "https://github.com/DewanPieterse/BetterLanScan/releases/download/v#{version}/BetterLanScan-#{version}.zip"
   name "BetterLanScan"

@@ -33,7 +33,10 @@ QLabel#subtle { color: #8b93a7; font-size: 12px; }
 QLabel#statLabel { color: #8b93a7; font-size: 11px; font-weight: 600; }
 QLabel#statValue { color: #ffffff; font-size: 20px; font-weight: 700; }
 QLabel#cardTitle { color: #8b93a7; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
-QLabel#cardBig { color: #ffffff; font-size: 22px; font-weight: 700; }
+QLabel#cardBig { color: #ffffff; font-size: 20px; font-weight: 700; }
+QComboBox { background:#20242f; border:1px solid #2c3140; border-radius:8px; padding:6px 10px; color:#e6e9ef; }
+QComboBox::drop-down { border:none; }
+QComboBox QAbstractItemView { background:#1c1f28; border:1px solid #262a36; color:#e6e9ef; selection-background-color:#2a3550; }
 
 QFrame#card {
     background: #1c1f28;
