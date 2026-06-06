@@ -1,0 +1,10 @@
+.venv/
+dist/
+dist_standalone/
+build_pyi/
+build/
+assets/AppIcon.iconset/
+__pycache__/
+*.pyc
+.DS_Store
+dist_release/
