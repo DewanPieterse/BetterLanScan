@@ -584,8 +584,15 @@ class WifiTab(QWidget):
 
         self._networks = st.networks
         hidden = any(n.ssid in ("", "(hidden)") for n in st.networks)
-        self.note.setText("ℹ️  SSIDs hidden — grant Location Services to BetterLanScan for full names."
-                          if hidden and st.networks else "")
+        if hidden and st.networks:
+            self.note.setText(
+                'ℹ️  SSIDs hidden — BetterLanScan needs Location Services to see network names.  '
+                '<a href="x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"'
+                ' style="color:#4c8dff;">Open Location Settings</a>'
+            )
+            self.note.setOpenExternalLinks(True)
+        else:
+            self.note.setText("")
 
         # persist Wi-Fi history
         for n in st.networks:
@@ -656,6 +663,7 @@ class ToolsTab(QWidget):
         super().__init__()
         self.info = info; self.status_cb = status_cb
         self._speed_thread: QThread | None = None
+        self._speed_worker: SpeedWorker | None = None
         self._build()
 
     def _build(self):
@@ -741,11 +749,11 @@ class ToolsTab(QWidget):
         if self._speed_thread and self._speed_thread.isRunning(): return
         self._dl_lbl.setText("…"); self._ul_lbl.setText("…"); self._lat_lbl.setText("…")
         self._speed_prog.show(); self._speed_btn.setEnabled(False)
-        self._speed_thread = QThread(); worker = SpeedWorker()
-        worker.moveToThread(self._speed_thread)
-        self._speed_thread.started.connect(worker.run)
-        worker.progress.connect(self._on_speed_progress)
-        worker.result.connect(self._on_speed_done)
+        self._speed_thread = QThread(); self._speed_worker = SpeedWorker()
+        self._speed_worker.moveToThread(self._speed_thread)
+        self._speed_thread.started.connect(self._speed_worker.run)
+        self._speed_worker.progress.connect(self._on_speed_progress)
+        self._speed_worker.result.connect(self._on_speed_done)
         self._speed_thread.start()
 
     def _on_speed_progress(self, stage, val):
@@ -755,6 +763,7 @@ class ToolsTab(QWidget):
     def _on_speed_done(self, r):
         self._speed_prog.hide(); self._speed_btn.setEnabled(True)
         if self._speed_thread: self._speed_thread.quit(); self._speed_thread.wait(2000)
+        self._speed_worker = None
         self._dl_lbl.setText(f"{r.download_mbps:.1f} Mbps" if r.download_mbps else "—")
         self._ul_lbl.setText(f"{r.upload_mbps:.1f} Mbps"  if r.upload_mbps else "—")
         self._lat_lbl.setText(f"{r.latency_ms:.0f} ms" if r.latency_ms else "—")

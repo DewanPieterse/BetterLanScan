@@ -6,7 +6,7 @@ import subprocess
 import time
 
 from PySide6.QtCore import Qt, QObject, QThread, Signal, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
     QScrollArea, QTextEdit, QSizePolicy, QApplication,
@@ -161,6 +161,8 @@ class DeviceDetailPanel(QWidget):
         for a in (self._anim, self._anim2):
             a.setDuration(220); a.setEasingCurve(QEasingCurve.OutCubic)
         self.setStyleSheet("DeviceDetailPanel{background:#181b23;border-left:1px solid #262a36;}")
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        esc.activated.connect(self.hide_panel)
         self._build()
 
     def _build(self):
@@ -221,7 +223,6 @@ class DeviceDetailPanel(QWidget):
         self._ping_graph.stop()
         for a in (self._anim, self._anim2):
             a.stop(); a.setStartValue(self.width()); a.setEndValue(0); a.start()
-        self._anim.finished.connect(lambda: self.setMaximumWidth(0))
         self.closed.emit()
 
     # ---- public entry
