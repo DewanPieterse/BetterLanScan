@@ -115,6 +115,19 @@ class SpeedWorker(QObject):
         self.result.emit(r)
 
 
+class TraceWorker(QObject):
+    result = Signal(str)
+
+    def __init__(self, target: str):
+        super().__init__()
+        self._target = target
+
+    def run(self):
+        from . import traceroute
+        hops = traceroute.run(self._target, max_hops=20, timeout_s=25)
+        self.result.emit("\n".join(h.display for h in hops))
+
+
 # ---------------------------------------------------------------- LAN tab
 LAN_COLS = ["", "★", "IP Address", "Name / Host", "OS", "MAC Address",
             "Vendor", "Type", "Open ports", "Latency"]
@@ -664,6 +677,8 @@ class ToolsTab(QWidget):
         self.info = info; self.status_cb = status_cb
         self._speed_thread: QThread | None = None
         self._speed_worker: SpeedWorker | None = None
+        self._trace_thread: QThread | None = None
+        self._trace_worker: TraceWorker | None = None
         self._build()
 
     def _build(self):
@@ -799,15 +814,19 @@ class ToolsTab(QWidget):
             self._pt_result.setPlainText(str(e))
 
     def _run_trace(self):
+        if self._trace_thread and self._trace_thread.isRunning():
+            return
         target = self._pt_edit.text().strip()
-        if not target: return
+        if not target:
+            return
         self._pt_result.setPlainText("Running traceroute…")
-        def do():
-            from . import traceroute
-            hops = traceroute.run(target, max_hops=20, timeout_s=25)
-            text = "\n".join(h.display for h in hops)
-            self._pt_result.setPlainText(text)
-        import threading; threading.Thread(target=do, daemon=True).start()
+        self._trace_thread = QThread()
+        self._trace_worker = TraceWorker(target)
+        self._trace_worker.moveToThread(self._trace_thread)
+        self._trace_thread.started.connect(self._trace_worker.run)
+        self._trace_worker.result.connect(self._pt_result.setPlainText)
+        self._trace_worker.result.connect(self._trace_thread.quit)
+        self._trace_thread.start()
 
     def _refresh_history(self):
         rows = _db.scan_history(limit=20)
